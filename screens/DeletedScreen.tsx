@@ -7,22 +7,20 @@ import {
     StyleSheet,
     Alert,
 } from 'react-native';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { NoteItem, ChecklistItem } from './HomeScreen'; // Import the shared type
 
 const TRASH_KEY = '@deleted_items';
+const NOTES_KEY = '@all_notes';
 
-type DeletedItem = {
-  id: string;
-  type: 'list' | 'item';
-  title: string;
-  listId?: string;
-  listTitle?: string;
-  items?: string[];           
+// Trash item extends NoteItem with a deletion timestamp
+type TrashItem = NoteItem & {
   deletedAt: string;
 };
 
-const DeletedScreen = () => {
-    const [trashItems, setTrashItems] = useState<DeletedItem[]>([]);
+const DeletedScreen = ({ onRestore }: { onRestore?: () => void }) => {
+    const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
 
     const loadTrash = async () => {
         const json = await AsyncStorage.getItem(TRASH_KEY);
@@ -32,11 +30,12 @@ const DeletedScreen = () => {
 
     useEffect(() => {
         loadTrash();
-        const interval = setInterval(loadTrash, 1000); // refresh every second (could be optimized)
+        // Optional: you can remove the interval and just refresh when needed (e.g., after restore/delete)
+        const interval = setInterval(loadTrash, 1000);
         return () => clearInterval(interval);
     }, []);
 
-    // Calculate days remaining (7 - days since deletion)
+    // Days remaining (7 days auto-delete)
     const daysLeft = (deletedAt: string) => {
         const deleted = new Date(deletedAt);
         const now = new Date();
@@ -44,49 +43,43 @@ const DeletedScreen = () => {
         return diffDays;
     };
 
-    const handleRestore = async (item: DeletedItem) => {
-        // Restore logic: move back from trash to @list_notes
+    const handleRestore = async (item: TrashItem) => {
         try {
-            if (item.type === 'list') {
-                // Recreate the list with empty items
-                const listsJson = await AsyncStorage.getItem('@list_notes');
-                const lists = listsJson != null ? JSON.parse(listsJson) : [];
-                const newList = {
-                    id: item.id,
-                    title: item.title,
-                    items: item.items || [],  
-                    createdAt: new Date().toISOString(),
-                };
-                lists.push(newList);
-                await AsyncStorage.setItem('@list_notes', JSON.stringify(lists));
-            } else if (item.type === 'item' && item.listId) {
-                // Find the list and append the item
-                const listsJson = await AsyncStorage.getItem('@list_notes');
-                let lists = listsJson != null ? JSON.parse(listsJson) : [];
-                lists = lists.map((l: any) => {
-                    if (l.id === item.listId) {
-                        return { ...l, items: [...l.items, item.title] };
-                    }
-                    return l;
-                });
-                await AsyncStorage.setItem('@list_notes', JSON.stringify(lists));
-            }
+            // Load current active notes
+            const notesJson = await AsyncStorage.getItem(NOTES_KEY);
+            const notes: NoteItem[] = notesJson ? JSON.parse(notesJson) : [];
+
+            // Create a restored note (remove deletedAt field, keep original createdAt)
+            const { deletedAt, ...restoredNote } = item;
+            // Ensure the note has the original createdAt (don't overwrite)
+            const noteToRestore: NoteItem = {
+                ...restoredNote,
+                createdAt: restoredNote.createdAt, // keep original creation date
+            };
+
+            // Add to active notes (e.g., at the beginning)
+            const updatedNotes = [noteToRestore, ...notes];
+            await AsyncStorage.setItem(NOTES_KEY, JSON.stringify(updatedNotes));
 
             // Remove from trash
             const updatedTrash = trashItems.filter(t => t.id !== item.id);
             await AsyncStorage.setItem(TRASH_KEY, JSON.stringify(updatedTrash));
             setTrashItems(updatedTrash);
-            Alert.alert('Restored', `"${item.title}" has been restored.`);
+            onRestore?.();
+
+            Alert.alert('Restored', `"${item.title || 'Untitled'}" has been restored.`);
         } catch (error) {
-            Alert.alert('Error', 'Could not restore item.');
+            console.error(error);
+            Alert.alert('Error', 'Could not restore note.');
         }
     };
 
-    const handlePermanentDelete = async (item: DeletedItem) => {
-        Alert.alert('Delete permanently', `Remove "${item.title}" forever?`, [
+    const handlePermanentDelete = async (item: TrashItem) => {
+        Alert.alert('Delete permanently', `Remove "${item.title || 'Untitled'}" forever?`, [
             { text: 'Cancel', style: 'cancel' },
             {
                 text: 'Delete',
+                style: 'destructive',
                 onPress: async () => {
                     const updatedTrash = trashItems.filter(t => t.id !== item.id);
                     await AsyncStorage.setItem(TRASH_KEY, JSON.stringify(updatedTrash));
@@ -94,6 +87,27 @@ const DeletedScreen = () => {
                 },
             },
         ]);
+    };
+
+    const renderItemContent = (item: TrashItem) => {
+        switch (item.type) {
+            case 'text':
+                return item.content ? (
+                    <Text style={styles.itemPreview} numberOfLines={2}>
+                        {item.content}
+                    </Text>
+                ) : null;
+            case 'list':
+                return item.items && item.items.length > 0 ? (
+                    <Text style={styles.itemPreview} numberOfLines={2}>
+                        {item.items.map(i => i.text).join(', ')}
+                    </Text>
+                ) : null;
+            case 'image':
+                return <Text style={styles.itemPreview}>📷 Image note</Text>;
+            default:
+                return null;
+        }
     };
 
     return (
@@ -105,6 +119,7 @@ const DeletedScreen = () => {
 
             {trashItems.length === 0 ? (
                 <View style={styles.emptyContainer}>
+                    <MaterialCommunityIcons name="delete-outline" color="#3d3d4d" size={120} />
                     <Text style={styles.emptyText}>No notes in recycle bin</Text>
                 </View>
             ) : (
@@ -115,12 +130,12 @@ const DeletedScreen = () => {
                         <View style={styles.trashItem}>
                             <View style={{ flex: 1 }}>
                                 <Text style={styles.itemTitle}>
-                                    {item.type === 'list' ? '📋 List: ' : '📝 Item: '}
-                                    {item.title}
+                                    {item.type === 'text' && '📄 '}
+                                    {item.type === 'list' && '☑️ '}
+                                    {item.type === 'image' && '🖼️ '}
+                                    {item.title || 'Untitled'}
                                 </Text>
-                                {item.listTitle && (
-                                    <Text style={styles.itemSubtitle}>from {item.listTitle}</Text>
-                                )}
+                                {renderItemContent(item)}
                                 <Text style={styles.daysLeft}>
                                     {daysLeft(item.deletedAt)} day(s) left
                                 </Text>
@@ -151,16 +166,17 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
         padding: 16,
-        backgroundColor: '#fff',
+        backgroundColor: '#1c1b1f', // match app theme
     },
     headerTitle: {
         fontSize: 28,
         fontWeight: 'bold',
         marginBottom: 4,
+        color: '#fff',
     },
     subHeader: {
         fontSize: 14,
-        color: '#666',
+        color: '#9898a8',
         marginBottom: 16,
     },
     emptyContainer: {
@@ -170,22 +186,28 @@ const styles = StyleSheet.create({
     },
     emptyText: {
         fontSize: 18,
-        color: '#888',
+        color: '#9898a8',
     },
     trashItem: {
         flexDirection: 'row',
         alignItems: 'center',
         paddingVertical: 12,
         borderBottomWidth: 1,
-        borderBottomColor: '#eee',
+        borderBottomColor: '#333',
+        backgroundColor: '#2a2a3a',
+        borderRadius: 8,
+        marginBottom: 8,
+        paddingHorizontal: 12,
     },
     itemTitle: {
         fontSize: 16,
         fontWeight: '500',
+        color: '#fff',
     },
-    itemSubtitle: {
-        fontSize: 12,
-        color: '#888',
+    itemPreview: {
+        fontSize: 13,
+        color: '#c8c8d8',
+        marginTop: 4,
     },
     daysLeft: {
         fontSize: 12,
@@ -195,6 +217,7 @@ const styles = StyleSheet.create({
     actions: {
         flexDirection: 'row',
         gap: 8,
+        marginLeft: 8,
     },
     restoreBtn: {
         backgroundColor: '#286090',
