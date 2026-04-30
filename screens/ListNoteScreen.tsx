@@ -160,13 +160,13 @@ const ListNoteScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {/* List of items */}
+        {/* List of items – NOW WITH BULLET POINTS */}
         <FlatList
           data={currentList.items}
           keyExtractor={(item, index) => `${index}`}
           renderItem={({ item, index }) => (
             <View style={styles.itemRow}>
-              <Text style={styles.itemText}>{item}</Text>
+              <Text style={styles.itemText}>• {item}</Text>
               <TouchableOpacity
                 style={styles.deleteItemBtn}
                 onPress={() => handleDeleteItem(index)}
@@ -204,7 +204,7 @@ const ListNoteScreen = () => {
         </TouchableOpacity>
       </View>
 
-      {/* FlatList of existing lists */}
+      {/* FlatList of existing lists – NO BULLET HERE */}
       <FlatList
         data={allLists}
         keyExtractor={(item) => item.id}
