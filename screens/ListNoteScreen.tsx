@@ -20,7 +20,18 @@ type ListNote = {
   createdAt: string;
 };
 
+type DeletedItem = {
+  id: string;
+  type: 'list' | 'item';
+  title: string;
+  listId?: string;
+  listTitle?: string;
+  items?: string[];   
+  deletedAt: string;
+};
+
 const STORAGE_KEY = '@list_notes';
+const TRASH_KEY = '@deleted_items';
 
 // ----------- Helper functions for AsyncStorage -----------
 const saveLists = async (lists: ListNote[]): Promise<void> => {
@@ -41,6 +52,31 @@ const loadLists = async (): Promise<ListNote[]> => {
   }
 };
 
+const saveTrash = async (trash: DeletedItem[]): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(TRASH_KEY, JSON.stringify(trash));
+  } catch (error) {
+    console.log('Error saving trash:', error);
+  }
+};
+
+const loadTrash = async (): Promise<DeletedItem[]> => {
+  try {
+    const json = await AsyncStorage.getItem(TRASH_KEY);
+    return json != null ? JSON.parse(json) : [];
+  } catch (error) {
+    console.log('Error loading trash:', error);
+    return [];
+  }
+};
+
+// Move an item to the recycle bin
+const moveToTrash = async (item: DeletedItem) => {
+  const trash = await loadTrash();
+  trash.push(item);
+  await saveTrash(trash);
+};
+
 // ----------- Main screen component -----------
 const ListNoteScreen = () => {
   const [allLists, setAllLists] = useState<ListNote[]>([]);
@@ -57,7 +93,6 @@ const ListNoteScreen = () => {
     fetchLists();
   }, []);
 
-  // Helper to generate a simple unique ID
   const generateId = () => Date.now().toString();
 
   // ----------- CRUD Operations -----------
@@ -78,17 +113,31 @@ const ListNoteScreen = () => {
     setAllLists(updatedLists);
     await saveLists(updatedLists);
     setNewTitle('');
-    setCurrentList(newList); // automatically open the new list
+    setCurrentList(newList);
   };
 
-  // DELETE a whole list
+  // DELETE a whole list → move to trash
   const handleDeleteList = async (listId: string) => {
-    Alert.alert('Delete list', 'Are you sure?', [
+    const listToDelete = allLists.find(l => l.id === listId);
+    if (!listToDelete) return;
+
+    Alert.alert('Delete list', `Move "${listToDelete.title}" to Recycle Bin?`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         onPress: async () => {
-          const updatedLists = allLists.filter((l) => l.id !== listId);
+          // Move list to trash
+          const deletedItem: DeletedItem = {
+            id: listToDelete.id,
+            type: 'list',
+            title: listToDelete.title,
+            items: listToDelete.items,  
+            deletedAt: new Date().toISOString(),
+          };
+          await moveToTrash(deletedItem);
+
+          // Remove list from active lists
+          const updatedLists = allLists.filter(l => l.id !== listId);
           setAllLists(updatedLists);
           await saveLists(updatedLists);
           if (currentList?.id === listId) setCurrentList(null);
@@ -109,7 +158,7 @@ const ListNoteScreen = () => {
     }
     const updatedItems = [...currentList.items, newItemText.trim()];
     const updatedList = { ...currentList, items: updatedItems };
-    const updatedLists = allLists.map((l) =>
+    const updatedLists = allLists.map(l =>
       l.id === updatedList.id ? updatedList : l
     );
     setAllLists(updatedLists);
@@ -118,17 +167,39 @@ const ListNoteScreen = () => {
     setNewItemText('');
   };
 
-  // DELETE an item from the currently open list
+  // DELETE an item from the currently open list → move to trash
   const handleDeleteItem = async (itemIndex: number) => {
     if (!currentList) return;
-    const updatedItems = currentList.items.filter((_, i) => i !== itemIndex);
-    const updatedList = { ...currentList, items: updatedItems };
-    const updatedLists = allLists.map((l) =>
-      l.id === updatedList.id ? updatedList : l
-    );
-    setAllLists(updatedLists);
-    setCurrentList(updatedList);
-    await saveLists(updatedLists);
+    const itemText = currentList.items[itemIndex];
+
+    Alert.alert('Delete item', `Move "${itemText}" to Recycle Bin?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        onPress: async () => {
+          // Move item to trash
+          const deletedItem: DeletedItem = {
+            id: generateId(), // unique ID for this trash entry
+            type: 'item',
+            title: itemText,
+            listId: currentList.id,
+            listTitle: currentList.title,
+            deletedAt: new Date().toISOString(),
+          };
+          await moveToTrash(deletedItem);
+
+          // Remove item from the list
+          const updatedItems = currentList.items.filter((_, i) => i !== itemIndex);
+          const updatedList = { ...currentList, items: updatedItems };
+          const updatedLists = allLists.map(l =>
+            l.id === updatedList.id ? updatedList : l
+          );
+          setAllLists(updatedLists);
+          setCurrentList(updatedList);
+          await saveLists(updatedLists);
+        },
+      },
+    ]);
   };
 
   // If a list is selected, show its items; otherwise show list overview
@@ -160,7 +231,7 @@ const ListNoteScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {/* List of items – NOW WITH BULLET POINTS */}
+        {/* List of items */}
         <FlatList
           data={currentList.items}
           keyExtractor={(item, index) => `${index}`}
@@ -204,7 +275,7 @@ const ListNoteScreen = () => {
         </TouchableOpacity>
       </View>
 
-      {/* FlatList of existing lists – NO BULLET HERE */}
+      {/* FlatList of existing lists */}
       <FlatList
         data={allLists}
         keyExtractor={(item) => item.id}
