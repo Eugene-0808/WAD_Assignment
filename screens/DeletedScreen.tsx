@@ -10,6 +10,7 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NoteItem, ChecklistItem } from './HomeScreen'; // Import the shared type
+import { createNoteInCloud } from '../server/cloudSync';
 
 const TRASH_KEY = '@deleted_items';
 const NOTES_KEY = '@all_notes';
@@ -43,36 +44,43 @@ const DeletedScreen = ({ onRestore }: { onRestore?: () => void }) => {
         return diffDays;
     };
 
+    const restoreToLocalNotes = async (note: NoteItem) => {
+        const json = await AsyncStorage.getItem(NOTES_KEY);
+        const currentNotes: NoteItem[] = json ? JSON.parse(json) : [];
+        const updatedNotes = [note, ...currentNotes.filter(n => n.id !== note.id)];
+        await AsyncStorage.setItem(NOTES_KEY, JSON.stringify(updatedNotes));
+    };
+
     const handleRestore = async (item: TrashItem) => {
-        try {
-            // Load current active notes
-            const notesJson = await AsyncStorage.getItem(NOTES_KEY);
-            const notes: NoteItem[] = notesJson ? JSON.parse(notesJson) : [];
+    try {
+        // 1. Prepare the note for restoration (remove the deletedAt field)
+        const { deletedAt, ...restoredNote } = item;
+        const noteToRestore: NoteItem = { ...restoredNote };
 
-            // Create a restored note (remove deletedAt field, keep original createdAt)
-            const { deletedAt, ...restoredNote } = item;
-            // Ensure the note has the original createdAt (don't overwrite)
-            const noteToRestore: NoteItem = {
-                ...restoredNote,
-                createdAt: restoredNote.createdAt, // keep original creation date
-            };
+        // 2. Add it back to the Cloud
+        const success = await createNoteInCloud(noteToRestore);
 
-            // Add to active notes (e.g., at the beginning)
-            const updatedNotes = [noteToRestore, ...notes];
-            await AsyncStorage.setItem(NOTES_KEY, JSON.stringify(updatedNotes));
+        if (success) {
+            // 3. Add the restored note to local storage so HomeScreen can load it
+            await restoreToLocalNotes(noteToRestore);
 
-            // Remove from trash
+            // 4. Remove it from local trash
             const updatedTrash = trashItems.filter(t => t.id !== item.id);
             await AsyncStorage.setItem(TRASH_KEY, JSON.stringify(updatedTrash));
             setTrashItems(updatedTrash);
+            
+            // 5. Refresh the HomeScreen list
             onRestore?.();
 
-            Alert.alert('Restored', `"${item.title || 'Untitled'}" has been restored.`);
-        } catch (error) {
-            console.error(error);
-            Alert.alert('Error', 'Could not restore note.');
+            Alert.alert('Restored', `"${item.title || 'Untitled'}" moved back to Cloud.`);
+        } else {
+            Alert.alert('Sync Error', 'Failed to restore note to the server.');
         }
-    };
+    } catch (error) {
+        console.error(error);
+        Alert.alert('Error', 'Could not restore note.');
+    }
+};
 
     const handlePermanentDelete = async (item: TrashItem) => {
         Alert.alert('Delete permanently', `Remove "${item.title || 'Untitled'}" forever?`, [
