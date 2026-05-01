@@ -17,6 +17,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import DeletedScreen from './DeletedScreen';
 import AddListNoteScreen from './AddListNoteScreen';
+// Import cloud sync functions
+import {
+  fetchAllNotesFromCloud,
+  createNoteInCloud,
+  updateNoteInCloud,
+  deleteNoteInCloud,
+} from '../server/cloudSync';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const NOTES_KEY = '@all_notes';
@@ -54,9 +61,23 @@ export default function HomeScreen() {
   const [notes, setNotes] = useState<NoteItem[]>([]);
   const [editingNote, setEditingNote] = useState<NoteItem | null>(null);
   const [searchText, setSearchText] = useState('');
+  const [isSyncing, setIsSyncing] = useState(false);
 
+  // Load notes from cloud on app start, else fallback to local
   useEffect(() => {
-    loadNotes().then(setNotes);
+    const loadFromCloud = async () => {
+      setIsSyncing(true);
+      const cloudNotes = await fetchAllNotesFromCloud();
+      if (cloudNotes.length > 0) {
+        setNotes(cloudNotes);
+        await saveNotes(cloudNotes);
+      } else {
+        const localNotes = await loadNotes();
+        setNotes(localNotes);
+      }
+      setIsSyncing(false);
+    };
+    loadFromCloud();
   }, []);
 
   const navigateTo = (page: 'home' | 'bin' | 'addList') => {
@@ -69,12 +90,20 @@ export default function HomeScreen() {
   const handleSaveNote = async (note: NoteItem) => {
     let updated: NoteItem[];
     if (editingNote) {
-      updated = notes.map(n => n.id === note.id ? note : n);
+      // Update existing note
+      updated = notes.map(n => (n.id === note.id ? note : n));
+      setNotes(updated);
+      await saveNotes(updated);
+      // Send update to cloud
+      await updateNoteInCloud(note);
     } else {
+      // Create new note
       updated = [note, ...notes];
+      setNotes(updated);
+      await saveNotes(updated);
+      // Send new note to cloud
+      await createNoteInCloud(note);
     }
-    setNotes(updated);
-    await saveNotes(updated);
     setEditingNote(null);
     setCurrentPage('home');
   };
@@ -82,7 +111,6 @@ export default function HomeScreen() {
   const moveToTrash = async (note: NoteItem) => {
     const trashJson = await AsyncStorage.getItem(TRASH_KEY);
     const trash = trashJson ? JSON.parse(trashJson) : [];
-    // Store the full note with a deletion timestamp
     const trashItem = {
       ...note,
       deletedAt: new Date().toISOString(),
@@ -95,7 +123,6 @@ export default function HomeScreen() {
     const noteToDelete = notes.find(n => n.id === noteId);
     if (!noteToDelete) return;
 
-    // Show confirmation dialog
     Alert.alert(
       'Delete Note',
       `Are you sure you want to delete "${noteToDelete.title || 'Untitled'}"?`,
@@ -105,12 +132,12 @@ export default function HomeScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            // Move to trash first
             await moveToTrash(noteToDelete);
-            // Remove from active notes
             const updated = notes.filter(n => n.id !== noteId);
             setNotes(updated);
             await saveNotes(updated);
+            // Also delete from cloud
+            await deleteNoteInCloud(noteId);
           },
         },
       ]
@@ -134,6 +161,22 @@ export default function HomeScreen() {
     });
     setNotes(updated);
     await saveNotes(updated);
+    // Also sync the updated note to cloud
+    const changedNote = updated.find(n => n.id === noteId);
+    if (changedNote) await updateNoteInCloud(changedNote);
+  };
+
+  const manualSync = async () => {
+    setIsSyncing(true);
+    const cloudNotes = await fetchAllNotesFromCloud();
+    if (cloudNotes.length > 0) {
+      setNotes(cloudNotes);
+      await saveNotes(cloudNotes);
+      Alert.alert('Sync Complete', 'Notes updated from cloud.');
+    } else {
+      Alert.alert('Sync', 'No notes found in cloud.');
+    }
+    setIsSyncing(false);
   };
 
   const renderNoteCard = ({ item }: { item: NoteItem }) => (
@@ -148,7 +191,9 @@ export default function HomeScreen() {
       {item.title ? <Text style={styles.noteCardTitle}>{item.title}</Text> : null}
 
       {item.type === 'text' && item.content ? (
-        <Text style={styles.noteCardContent} numberOfLines={6}>{item.content}</Text>
+        <Text style={styles.noteCardContent} numberOfLines={6}>
+          {item.content}
+        </Text>
       ) : null}
 
       {item.type === 'list' && item.items ? (
@@ -164,7 +209,9 @@ export default function HomeScreen() {
                 size={16}
                 color={ci.checked ? '#8877cc' : '#c8c8d8'}
               />
-              <Text style={[styles.checklistText, ci.checked && styles.checklistChecked]}>
+              <Text
+                style={[styles.checklistText, ci.checked && styles.checklistChecked]}
+              >
                 {ci.text}
               </Text>
             </TouchableOpacity>
@@ -220,7 +267,13 @@ export default function HomeScreen() {
                 onChangeText={setSearchText}
                 returnKeyType="search"
               />
-              <View style={styles.avatar}><Text style={styles.avatarText}>A</Text></View>
+              {/* Manual sync button */}
+              <TouchableOpacity onPress={manualSync} style={styles.syncBtn}>
+                <MaterialCommunityIcons name="cloud-sync" color="#c8c8d8" size={24} />
+              </TouchableOpacity>
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>A</Text>
+              </View>
             </View>
 
             {notes.length === 0 ? (
@@ -234,6 +287,8 @@ export default function HomeScreen() {
                 keyExtractor={item => item.id}
                 renderItem={renderNoteCard}
                 contentContainerStyle={styles.notesList}
+                refreshing={isSyncing}
+                onRefresh={manualSync}
               />
             )}
           </>
@@ -272,19 +327,40 @@ export default function HomeScreen() {
 
       {currentPage === 'home' && (
         <>
-          {isMenuVisible && <Pressable style={styles.overlay} onPress={() => setIsMenuVisible(false)} />}
+          {isMenuVisible && (
+            <Pressable style={styles.overlay} onPress={() => setIsMenuVisible(false)} />
+          )}
           <View style={styles.fabContainer}>
             {isMenuVisible && (
               <View style={styles.menuItemsContainer}>
-                <TouchableOpacity style={styles.menuItem} onPress={() => { setEditingNote(null); navigateTo('home'); }}>
+                <TouchableOpacity
+                  style={styles.menuItem}
+                  onPress={() => {
+                    setEditingNote(null);
+                    // TODO: navigate to AddTextNoteScreen (once created)
+                    Alert.alert('Info', 'Text note editor coming soon');
+                  }}
+                >
                   <MaterialCommunityIcons name="format-text-variant" color="#e8e0ff" size={24} />
                   <Text style={styles.menuItemText}>Text</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.menuItem} onPress={() => { setEditingNote(null); navigateTo('addList'); }}>
+                <TouchableOpacity
+                  style={styles.menuItem}
+                  onPress={() => {
+                    setEditingNote(null);
+                    navigateTo('addList');
+                  }}
+                >
                   <MaterialCommunityIcons name="checkbox-marked-outline" color="#e8e0ff" size={24} />
                   <Text style={styles.menuItemText}>List</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.menuItem} onPress={() => { setEditingNote(null); navigateTo('home'); }}>
+                <TouchableOpacity
+                  style={styles.menuItem}
+                  onPress={() => {
+                    setEditingNote(null);
+                    Alert.alert('Info', 'Image note feature coming soon');
+                  }}
+                >
                   <MaterialCommunityIcons name="image-outline" color="#e8e0ff" size={24} />
                   <Text style={styles.menuItemText}>Image</Text>
                 </TouchableOpacity>
@@ -311,14 +387,28 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#1c1b1f' },
   topBar: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 10 },
   menuBtn: { padding: 8 },
-  searchBar: { flex: 1, backgroundColor: '#2a2a3d', borderRadius: 28, height: 48, justifyContent: 'center', paddingLeft: 16, color: '#9898a8' },
-  searchPlaceholder: { color: '#9898a8', fontSize: 16 },
-  avatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#5b6abf', justifyContent: 'center', alignItems: 'center' },
+  searchBar: {
+    flex: 1,
+    backgroundColor: '#2a2a3d',
+    borderRadius: 28,
+    height: 48,
+    justifyContent: 'center',
+    paddingLeft: 16,
+    color: '#9898a8',
+  },
+  syncBtn: { padding: 8 },
+  avatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#5b6abf',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   avatarText: { color: '#fff' },
   emptyState: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   emptyText: { color: '#9898a8', marginTop: 10 },
 
-  // Notes grid
   notesList: { padding: 16 },
   notesRow: { justifyContent: 'space-between' },
   noteCard: {
@@ -334,30 +424,59 @@ const styles = StyleSheet.create({
   noteCardContent: { color: '#c8c8d8', fontSize: 14, lineHeight: 20 },
   noteDate: { color: '#666', fontSize: 11, marginTop: 8 },
 
-  // Checklist in card
   checklistRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
   checklistText: { color: '#c8c8d8', fontSize: 13, flex: 1 },
   checklistChecked: { textDecorationLine: 'line-through', color: '#666' },
   moreText: { color: '#888', fontSize: 12, marginTop: 4 },
 
-  // Drawer
   drawerMask: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 10 },
-  drawerContainer: { position: 'absolute', left: 0, top: 0, bottom: 0, width: SCREEN_WIDTH * 0.75, backgroundColor: '#202124', zIndex: 11, padding: 20, paddingTop: 50 },
+  drawerContainer: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: SCREEN_WIDTH * 0.75,
+    backgroundColor: '#202124',
+    zIndex: 11,
+    padding: 20,
+    paddingTop: 50,
+  },
   drawerTitle: { color: '#fff', fontSize: 22, fontWeight: 'bold', marginBottom: 30 },
-  drawerLink: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 15, gap: 20, borderRadius: 10 },
+  drawerLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 15,
+    gap: 20,
+    borderRadius: 10,
+  },
   activeDrawerLink: { backgroundColor: '#41334e' },
   drawerLinkText: { color: '#fff', fontSize: 16 },
 
-  // Sub-page header
-  headerBar: { flexDirection: 'row', alignItems: 'center', padding: 12, gap: 15, borderBottomWidth: 1, borderBottomColor: '#333' },
+  headerBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    gap: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+  },
   headerText: { color: '#fff', fontSize: 20, fontWeight: '500' },
 
-  // FAB
   overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 1 },
   fabContainer: { position: 'absolute', bottom: 30, right: 20, alignItems: 'flex-end', zIndex: 2 },
   fab: { width: 60, height: 60, borderRadius: 16, backgroundColor: '#6d5fd4', justifyContent: 'center', alignItems: 'center' },
   fabClose: { backgroundColor: '#d7caff' },
   menuItemsContainer: { marginBottom: 15, gap: 12 },
-  menuItem: { flexDirection: 'row-reverse', alignItems: 'center', backgroundColor: '#4a447d', padding: 12, borderRadius: 25, minWidth: 130, justifyContent: 'center', gap: 10 },
+  menuItem: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    backgroundColor: '#4a447d',
+    padding: 12,
+    borderRadius: 25,
+    minWidth: 130,
+    justifyContent: 'center',
+    gap: 10,
+  },
   menuItemText: { color: '#e8e0ff', fontSize: 16 },
 });
