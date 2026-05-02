@@ -14,6 +14,7 @@ import {
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
+import { NoteCard } from '../components/NoteCard';
 
 // Import cloud sync functions from server/cloudSync.ts
 import {
@@ -138,42 +139,12 @@ export default function HomeScreen({ navigation }: any) {
   };
 
   const renderNoteCard = ({ item }: { item: NoteItem }) => (
-    <TouchableOpacity
-      style={styles.noteCard}
-      onPress={() => navigation.navigate('AddListNote', {
-        initialNote: item,
-        onSave: handleSaveNote
-      })}
+    <NoteCard
+      note={item}
+      onPress={() => navigation.navigate('AddListNote', { initialNote: item, onSave: handleSaveNote })}
       onLongPress={() => handleDeleteNote(item.id)}
-    >
-      {item.title ? <Text style={styles.noteCardTitle}>{item.title}</Text> : null}
-
-      {item.type === 'text' && (
-        <Text style={styles.noteCardContent} numberOfLines={6}>{item.content}</Text>
-      )}
-
-      {item.type === 'list' && item.items && (
-        <View>
-          {item.items.slice(0, 5).map(ci => (
-            <TouchableOpacity
-              key={ci.id}
-              style={styles.checklistRow}
-              onPress={() => toggleChecklistItem(item.id, ci.id)}
-            >
-              <MaterialCommunityIcons
-                name={ci.checked ? 'checkbox-marked' : 'checkbox-blank-outline'}
-                size={16}
-                color={ci.checked ? '#8877cc' : '#c8c8d8'}
-              />
-              <Text style={[styles.checklistText, ci.checked && styles.checklistChecked]}>
-                {ci.text}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      )}
-      <Text style={styles.noteDate}>{new Date(item.createdAt).toLocaleDateString()}</Text>
-    </TouchableOpacity>
+      onToggleChecklistItem={toggleChecklistItem}
+    />
   );
   const syncFromCloud = async () => {
     setIsSyncing(true);
@@ -318,13 +289,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#3a3a4a',
   },
-  noteCardTitle: { color: '#fff', fontSize: 18, fontWeight: '600', marginBottom: 8 },
-  noteCardContent: { color: '#c8c8d8', fontSize: 14, lineHeight: 20 },
-  noteDate: { color: '#666', fontSize: 11, marginTop: 8 },
-
-  checklistRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
-  checklistText: { color: '#c8c8d8', fontSize: 13, flex: 1 },
-  checklistChecked: { textDecorationLine: 'line-through', color: '#666' },
   moreText: { color: '#888', fontSize: 12, marginTop: 4 },
 
   drawerMask: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 10 },

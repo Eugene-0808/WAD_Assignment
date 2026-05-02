@@ -8,6 +8,7 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import { NoteItem, ChecklistItem } from './HomeScreen'; //
@@ -47,11 +48,12 @@ export default function AddListNoteScreen({ route, navigation }: any) {
       finalItems = [...items, { id: Date.now().toString(), text: newItemText.trim(), checked: false }];
     }
 
-    // If empty, just go back without saving[cite: 10]
     if (!title.trim() && finalItems.length === 0) {
-      navigation.goBack();
-      return;
-    }
+    Alert.alert('Empty Note', 'Please add a title or at least one list item.', [
+      { text: 'OK' }
+    ]);
+    return; // Stay on the screen instead of going back
+  }
 
     const note: NoteItem = {
       id: initialNote?.id || Date.now().toString(),
@@ -61,11 +63,11 @@ export default function AddListNoteScreen({ route, navigation }: any) {
       createdAt: initialNote?.createdAt || new Date().toISOString(),
     };
 
-    // Execute the save function passed from HomeScreen and navigate back[cite: 10, 13]
+    // Execute the save function passed from HomeScreen and navigate back
     if (onSave) {
       onSave(note);
     }
-    navigation.goBack(); //
+    navigation.goBack(); 
   };
 
   return (
@@ -73,7 +75,7 @@ export default function AddListNoteScreen({ route, navigation }: any) {
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      {/* Refactored Header with Navigation goBack[cite: 1, 10] */}
+      {/* Refactored Header with Navigation goBack */}
       <View style={styles.headerBar}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconBtn}>
           <MaterialCommunityIcons name="arrow-left" color="#c8c8d8" size={24} />
