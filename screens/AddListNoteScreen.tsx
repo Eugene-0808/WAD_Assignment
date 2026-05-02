@@ -10,15 +10,12 @@ import {
   Platform,
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
-import { NoteItem, ChecklistItem } from './HomeScreen';
+import { NoteItem, ChecklistItem } from './HomeScreen'; //
 
-type Props = {
-  initialNote: NoteItem | null;
-  onSave: (note: NoteItem) => void;
-  onBack: () => void;
-};
+export default function AddListNoteScreen({ route, navigation }: any) {
+  // Extract parameters passed from HomeScreen_2
+  const { initialNote, onSave } = route.params || {};
 
-export default function AddListNoteScreen({ initialNote, onSave, onBack }: Props) {
   const [title, setTitle] = useState(initialNote?.title || '');
   const [items, setItems] = useState<ChecklistItem[]>(initialNote?.items || []);
   const [newItemText, setNewItemText] = useState('');
@@ -45,14 +42,14 @@ export default function AddListNoteScreen({ initialNote, onSave, onBack }: Props
   };
 
   const handleSave = () => {
-    // Also add pending text as item if user typed but didn't press +
     let finalItems = items;
     if (newItemText.trim()) {
       finalItems = [...items, { id: Date.now().toString(), text: newItemText.trim(), checked: false }];
     }
 
+    // If empty, just go back without saving[cite: 10]
     if (!title.trim() && finalItems.length === 0) {
-      onBack();
+      navigation.goBack();
       return;
     }
 
@@ -63,7 +60,12 @@ export default function AddListNoteScreen({ initialNote, onSave, onBack }: Props
       items: finalItems,
       createdAt: initialNote?.createdAt || new Date().toISOString(),
     };
-    onSave(note);
+
+    // Execute the save function passed from HomeScreen and navigate back[cite: 10, 13]
+    if (onSave) {
+      onSave(note);
+    }
+    navigation.goBack(); //
   };
 
   return (
@@ -71,9 +73,9 @@ export default function AddListNoteScreen({ initialNote, onSave, onBack }: Props
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      {/* Header */}
+      {/* Refactored Header with Navigation goBack[cite: 1, 10] */}
       <View style={styles.headerBar}>
-        <TouchableOpacity onPress={handleSave} style={styles.iconBtn}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconBtn}>
           <MaterialCommunityIcons name="arrow-left" color="#c8c8d8" size={24} />
         </TouchableOpacity>
         <View style={{ flex: 1 }} />
@@ -82,7 +84,6 @@ export default function AddListNoteScreen({ initialNote, onSave, onBack }: Props
         </TouchableOpacity>
       </View>
 
-      {/* Title */}
       <TextInput
         style={styles.titleInput}
         placeholder="Title"
@@ -92,7 +93,6 @@ export default function AddListNoteScreen({ initialNote, onSave, onBack }: Props
         autoFocus={!initialNote}
       />
 
-      {/* Add new item row - placed right below title so it's always visible */}
       <View style={styles.addRow}>
         <MaterialCommunityIcons name="plus" size={22} color="#8877cc" />
         <TextInput
@@ -103,7 +103,6 @@ export default function AddListNoteScreen({ initialNote, onSave, onBack }: Props
           onChangeText={setNewItemText}
           onSubmitEditing={handleAddItem}
           returnKeyType="done"
-          autoFocus={!initialNote}
         />
         {newItemText.length > 0 && (
           <TouchableOpacity onPress={handleAddItem} style={styles.addBtn}>
@@ -112,7 +111,6 @@ export default function AddListNoteScreen({ initialNote, onSave, onBack }: Props
         )}
       </View>
 
-      {/* Checklist items */}
       <FlatList
         data={items}
         keyExtractor={item => item.id}
