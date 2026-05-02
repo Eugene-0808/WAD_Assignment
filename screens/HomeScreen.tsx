@@ -4,20 +4,18 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  StyleSheet,
-  StatusBar,
   SafeAreaView,
-  Pressable,
-  Dimensions,
+  StatusBar,
   FlatList,
   Alert,
+  Pressable,
+  StyleSheet
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
 
-import DeletedScreen from './DeletedScreen';
-import AddListNoteScreen from './AddListNoteScreen';
-// Import cloud sync functions
+// Import cloud sync functions from server/cloudSync.ts
 import {
   fetchAllNotesFromCloud,
   createNoteInCloud,
@@ -25,17 +23,20 @@ import {
   deleteNoteInCloud,
 } from '../server/cloudSync';
 
-const SCREEN_WIDTH = Dimensions.get('window').width;
 const NOTES_KEY = '@all_notes';
 const TRASH_KEY = '@deleted_items';
 
+import { Dimensions } from 'react-native';
+const SCREEN_WIDTH = Dimensions.get('window').width;
+
+// Types derived from source
 export type NoteItem = {
   id: string;
   type: 'text' | 'list' | 'image';
   title: string;
-  content?: string;         // for text notes
-  items?: ChecklistItem[];  // for list notes
-  imageUri?: string;        // for image notes
+  content?: string;
+  items?: ChecklistItem[];
+  imageUri?: string;
   createdAt: string;
 };
 
@@ -45,108 +46,81 @@ export type ChecklistItem = {
   checked: boolean;
 };
 
-const saveNotes = async (notes: NoteItem[]) => {
-  await AsyncStorage.setItem(NOTES_KEY, JSON.stringify(notes));
-};
-
-const loadNotes = async (): Promise<NoteItem[]> => {
-  const json = await AsyncStorage.getItem(NOTES_KEY);
-  return json ? JSON.parse(json) : [];
-};
-
-export default function HomeScreen() {
-  const [currentPage, setCurrentPage] = useState<'home' | 'bin' | 'addList'>('home');
-  const [isMenuVisible, setIsMenuVisible] = useState(false);
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+export default function HomeScreen({ navigation }: any) {
+  // Navigation state is now handled by the Stack/Drawer/Tab navigators
   const [notes, setNotes] = useState<NoteItem[]>([]);
-  const [editingNote, setEditingNote] = useState<NoteItem | null>(null);
+  const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Load notes from cloud on app start, else fallback to local
+  // Load notes from cloud on mount, fallback to local
   useEffect(() => {
-    const loadFromCloud = async () => {
+    const loadInitialData = async () => {
       setIsSyncing(true);
       const cloudNotes = await fetchAllNotesFromCloud();
       if (cloudNotes.length > 0) {
         setNotes(cloudNotes);
-        await saveNotes(cloudNotes);
+        await AsyncStorage.setItem(NOTES_KEY, JSON.stringify(cloudNotes));
       } else {
-        const localNotes = await loadNotes();
-        setNotes(localNotes);
+        const json = await AsyncStorage.getItem(NOTES_KEY);
+        if (json) setNotes(JSON.parse(json));
       }
       setIsSyncing(false);
     };
-    loadFromCloud();
+    loadInitialData();
   }, []);
 
-  const navigateTo = (page: 'home' | 'bin' | 'addList') => {
-    setCurrentPage(page);
-    setIsDrawerOpen(false);
-    setIsMenuVisible(false);
-    if (page === 'home') setEditingNote(null);
-  };
+  // Reload notes when screen comes into focus (e.g., after restoring from trash)
+  useFocusEffect(
+    React.useCallback(() => {
+      const loadNotes = async () => {
+        const json = await AsyncStorage.getItem(NOTES_KEY);
+        if (json) setNotes(JSON.parse(json));
+      };
+      loadNotes();
+    }, [])
+  );
 
   const handleSaveNote = async (note: NoteItem) => {
+    const isEditing = notes.find(n => n.id === note.id);
     let updated: NoteItem[];
-    if (editingNote) {
-      // Update existing note
+
+    if (isEditing) {
       updated = notes.map(n => (n.id === note.id ? note : n));
-      setNotes(updated);
-      await saveNotes(updated);
-      // Send update to cloud
       await updateNoteInCloud(note);
     } else {
-      // Create new note
       updated = [note, ...notes];
-      setNotes(updated);
-      await saveNotes(updated);
-      // Send new note to cloud
       await createNoteInCloud(note);
     }
-    setEditingNote(null);
-    setCurrentPage('home');
-  };
 
-  const moveToTrash = async (note: NoteItem) => {
-    const trashJson = await AsyncStorage.getItem(TRASH_KEY);
-    const trash = trashJson ? JSON.parse(trashJson) : [];
-    const trashItem = {
-      ...note,
-      deletedAt: new Date().toISOString(),
-    };
-    trash.push(trashItem);
-    await AsyncStorage.setItem(TRASH_KEY, JSON.stringify(trash));
+    setNotes(updated);
+    await AsyncStorage.setItem(NOTES_KEY, JSON.stringify(updated));
   };
 
   const handleDeleteNote = async (noteId: string) => {
     const noteToDelete = notes.find(n => n.id === noteId);
     if (!noteToDelete) return;
 
-    Alert.alert(
-      'Delete Note',
-      `Are you sure you want to delete "${noteToDelete.title || 'Untitled'}"?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            await moveToTrash(noteToDelete);
-            const updated = notes.filter(n => n.id !== noteId);
-            setNotes(updated);
-            await saveNotes(updated);
-            // Also delete from cloud
-            await deleteNoteInCloud(noteId);
-          },
-        },
-      ]
-    );
-  };
+    Alert.alert('Delete Note', `Move "${noteToDelete.title || 'Untitled'}" to bin?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          // Data Persistence: Move to local trash
+          const trashJson = await AsyncStorage.getItem(TRASH_KEY);
+          const trash = trashJson ? JSON.parse(trashJson) : [];
+          trash.push({ ...noteToDelete, deletedAt: new Date().toISOString() });
+          await AsyncStorage.setItem(TRASH_KEY, JSON.stringify(trash));
 
-  const refreshNotes = async () => {
-    const loadedNotes = await loadNotes();
-    setNotes(loadedNotes);
+          // Cloud Connectivity: Delete from server
+          const updated = notes.filter(n => n.id !== noteId);
+          setNotes(updated);
+          await AsyncStorage.setItem(NOTES_KEY, JSON.stringify(updated));
+          await deleteNoteInCloud(noteId);
+        },
+      },
+    ]);
   };
 
   const toggleChecklistItem = async (noteId: string, itemId: string) => {
@@ -154,49 +128,31 @@ export default function HomeScreen() {
       if (n.id !== noteId || !n.items) return n;
       return {
         ...n,
-        items: n.items.map(i =>
-          i.id === itemId ? { ...i, checked: !i.checked } : i
-        ),
+        items: n.items.map(i => (i.id === itemId ? { ...i, checked: !i.checked } : i)),
       };
     });
     setNotes(updated);
-    await saveNotes(updated);
-    // Also sync the updated note to cloud
-    const changedNote = updated.find(n => n.id === noteId);
-    if (changedNote) await updateNoteInCloud(changedNote);
-  };
-
-  const manualSync = async () => {
-    setIsSyncing(true);
-    const cloudNotes = await fetchAllNotesFromCloud();
-    if (cloudNotes.length > 0) {
-      setNotes(cloudNotes);
-      await saveNotes(cloudNotes);
-      Alert.alert('Sync Complete', 'Notes updated from cloud.');
-    } else {
-      Alert.alert('Sync', 'No notes found in cloud.');
-    }
-    setIsSyncing(false);
+    await AsyncStorage.setItem(NOTES_KEY, JSON.stringify(updated));
+    const changed = updated.find(n => n.id === noteId);
+    if (changed) await updateNoteInCloud(changed);
   };
 
   const renderNoteCard = ({ item }: { item: NoteItem }) => (
     <TouchableOpacity
       style={styles.noteCard}
-      onPress={() => {
-        setEditingNote(item);
-        setCurrentPage(item.type === 'list' ? 'addList' : 'home');
-      }}
+      onPress={() => navigation.navigate('AddListNote', {
+        initialNote: item,
+        onSave: handleSaveNote
+      })}
       onLongPress={() => handleDeleteNote(item.id)}
     >
       {item.title ? <Text style={styles.noteCardTitle}>{item.title}</Text> : null}
 
-      {item.type === 'text' && item.content ? (
-        <Text style={styles.noteCardContent} numberOfLines={6}>
-          {item.content}
-        </Text>
-      ) : null}
+      {item.type === 'text' && (
+        <Text style={styles.noteCardContent} numberOfLines={6}>{item.content}</Text>
+      )}
 
-      {item.type === 'list' && item.items ? (
+      {item.type === 'list' && item.items && (
         <View>
           {item.items.slice(0, 5).map(ci => (
             <TouchableOpacity
@@ -209,90 +165,30 @@ export default function HomeScreen() {
                 size={16}
                 color={ci.checked ? '#8877cc' : '#c8c8d8'}
               />
-              <Text
-                style={[styles.checklistText, ci.checked && styles.checklistChecked]}
-              >
+              <Text style={[styles.checklistText, ci.checked && styles.checklistChecked]}>
                 {ci.text}
               </Text>
             </TouchableOpacity>
           ))}
-          {item.items.length > 5 && (
-            <Text style={styles.moreText}>+{item.items.length - 5} more</Text>
-          )}
         </View>
-      ) : null}
-
-      <Text style={styles.noteDate}>
-        {new Date(item.createdAt).toLocaleDateString()}
-      </Text>
+      )}
+      <Text style={styles.noteDate}>{new Date(item.createdAt).toLocaleDateString()}</Text>
     </TouchableOpacity>
   );
-
-  const renderContent = () => {
-    switch (currentPage) {
-      case 'bin':
-        return (
-          <View style={{ flex: 1 }}>
-            <View style={styles.headerBar}>
-              <TouchableOpacity onPress={() => navigateTo('home')} style={styles.menuBtn}>
-                <MaterialCommunityIcons name="arrow-left" color="#c8c8d8" size={24} />
-              </TouchableOpacity>
-              <Text style={styles.headerText}>Recycle Bin</Text>
-            </View>
-            <DeletedScreen onRestore={refreshNotes} />
-          </View>
-        );
-
-      case 'addList':
-        return (
-          <AddListNoteScreen
-            initialNote={editingNote}
-            onSave={handleSaveNote}
-            onBack={() => navigateTo('home')}
-          />
-        );
-
-      default: // home
-        return (
-          <>
-            <View style={styles.topBar}>
-              <TouchableOpacity onPress={() => setIsDrawerOpen(true)} style={styles.menuBtn}>
-                <MaterialCommunityIcons name="menu" color="#c8c8d8" size={24} />
-              </TouchableOpacity>
-              <TextInput
-                style={styles.searchBar}
-                placeholder="Search your notes"
-                placeholderTextColor="#9898a8"
-                value={searchText}
-                onChangeText={setSearchText}
-                returnKeyType="search"
-              />
-              {/* Manual sync button */}
-              <TouchableOpacity onPress={manualSync} style={styles.syncBtn}>
-                <MaterialCommunityIcons name="cloud-sync" color="#c8c8d8" size={24} />
-              </TouchableOpacity>
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>A</Text>
-              </View>
-            </View>
-
-            {notes.length === 0 ? (
-              <View style={styles.emptyState}>
-                <MaterialCommunityIcons name="lightbulb-outline" color="#3d3d4d" size={120} />
-                <Text style={styles.emptyText}>Notes you add appear here</Text>
-              </View>
-            ) : (
-              <FlatList
-                data={notes}
-                keyExtractor={item => item.id}
-                renderItem={renderNoteCard}
-                contentContainerStyle={styles.notesList}
-                refreshing={isSyncing}
-                onRefresh={manualSync}
-              />
-            )}
-          </>
-        );
+  const syncFromCloud = async () => {
+    setIsSyncing(true);
+    try {
+      const cloudNotes = await fetchAllNotesFromCloud();
+      if (cloudNotes.length > 0) {
+        setNotes(cloudNotes);
+        await AsyncStorage.setItem(NOTES_KEY, JSON.stringify(cloudNotes));
+      }
+      Alert.alert('Sync Complete', 'Your notes are up to date');
+    } catch (error) {
+      console.error(error);
+      Alert.alert('Sync Error', 'Could not sync with cloud');
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -300,85 +196,87 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="light-content" backgroundColor="#1c1b1f" />
 
-      {isDrawerOpen && (
-        <>
-          <Pressable style={styles.drawerMask} onPress={() => setIsDrawerOpen(false)} />
-          <View style={styles.drawerContainer}>
-            <Text style={styles.drawerTitle}>Google Keep</Text>
+      {/* Header with Drawer Trigger */}
+      <View style={styles.topBar}>
+        <TouchableOpacity onPress={() => navigation.openDrawer()} style={styles.menuBtn}>
+          <MaterialCommunityIcons name="menu" color="#c8c8d8" size={24} />
+        </TouchableOpacity>
+        <TextInput
+          style={styles.searchBar}
+          placeholder="Search your notes"
+          placeholderTextColor="#9898a8"
+          value={searchText}
+          onChangeText={setSearchText}
+        />
+        <TouchableOpacity onPress={syncFromCloud} style={styles.syncBtn}>
+          <MaterialCommunityIcons name="cloud-sync" color="#c8c8d8" size={24} />
+        </TouchableOpacity>
+        <View style={styles.avatar}><Text style={styles.avatarText}>A</Text></View>
+      </View>
+
+      <FlatList
+        data={notes.filter(n => n.title.toLowerCase().includes(searchText.toLowerCase()))}
+        keyExtractor={item => item.id}
+        renderItem={renderNoteCard}
+        contentContainerStyle={styles.notesList}
+        refreshing={isSyncing}
+        onRefresh={async () => {
+          setIsSyncing(true);
+          const cloudNotes = await fetchAllNotesFromCloud();
+          if (cloudNotes.length > 0) setNotes(cloudNotes);
+          setIsSyncing(false);
+        }}
+      />
+
+      {/* FAB uses navigation.navigate to reach the AddListNote screen */}
+      <View style={styles.fabContainer}>
+        {isMenuVisible && (
+          <View style={styles.menuItemsContainer}>
             <TouchableOpacity
-              style={[styles.drawerLink, currentPage === 'home' && styles.activeDrawerLink]}
-              onPress={() => navigateTo('home')}
+              style={styles.menuItem}
+              onPress={() => {
+                setIsMenuVisible(false);
+                Alert.alert('Info', 'Text note feature coming soon');
+              }}
             >
-              <MaterialCommunityIcons name="lightbulb-outline" size={22} color="#fff" />
-              <Text style={styles.drawerLinkText}>Notes</Text>
+              <MaterialCommunityIcons name="text" color="#e8e0ff" size={24} />
+              <Text style={styles.menuItemText}>Text</Text>
             </TouchableOpacity>
+
             <TouchableOpacity
-              style={[styles.drawerLink, currentPage === 'bin' && styles.activeDrawerLink]}
-              onPress={() => navigateTo('bin')}
+              style={styles.menuItem}
+              onPress={() => {
+                setIsMenuVisible(false);
+                navigation.navigate('AddListNote', { initialNote: null, onSave: handleSaveNote });
+              }}
             >
-              <MaterialCommunityIcons name="delete-outline" size={22} color="#fff" />
-              <Text style={styles.drawerLinkText}>Bin</Text>
+              <MaterialCommunityIcons name="checkbox-marked-outline" color="#e8e0ff" size={24} />
+              <Text style={styles.menuItemText}>List</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                setIsMenuVisible(false);
+                Alert.alert('Info', 'Image note feature coming soon');
+              }}
+            >
+              <MaterialCommunityIcons name="image" color="#e8e0ff" size={24} />
+              <Text style={styles.menuItemText}>Image</Text>
             </TouchableOpacity>
           </View>
-        </>
-      )}
-
-      {renderContent()}
-
-      {currentPage === 'home' && (
-        <>
-          {isMenuVisible && (
-            <Pressable style={styles.overlay} onPress={() => setIsMenuVisible(false)} />
-          )}
-          <View style={styles.fabContainer}>
-            {isMenuVisible && (
-              <View style={styles.menuItemsContainer}>
-                <TouchableOpacity
-                  style={styles.menuItem}
-                  onPress={() => {
-                    setEditingNote(null);
-                    // TODO: navigate to AddTextNoteScreen (once created)
-                    Alert.alert('Info', 'Text note editor coming soon');
-                  }}
-                >
-                  <MaterialCommunityIcons name="format-text-variant" color="#e8e0ff" size={24} />
-                  <Text style={styles.menuItemText}>Text</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.menuItem}
-                  onPress={() => {
-                    setEditingNote(null);
-                    navigateTo('addList');
-                  }}
-                >
-                  <MaterialCommunityIcons name="checkbox-marked-outline" color="#e8e0ff" size={24} />
-                  <Text style={styles.menuItemText}>List</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.menuItem}
-                  onPress={() => {
-                    setEditingNote(null);
-                    Alert.alert('Info', 'Image note feature coming soon');
-                  }}
-                >
-                  <MaterialCommunityIcons name="image-outline" color="#e8e0ff" size={24} />
-                  <Text style={styles.menuItemText}>Image</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-            <TouchableOpacity
-              style={[styles.fab, isMenuVisible && styles.fabClose]}
-              onPress={() => setIsMenuVisible(!isMenuVisible)}
-            >
-              <MaterialCommunityIcons
-                name={isMenuVisible ? 'close' : 'plus'}
-                color={isMenuVisible ? '#1c1b1f' : '#e8e0ff'}
-                size={32}
-              />
-            </TouchableOpacity>
-          </View>
-        </>
-      )}
+        )}
+        <TouchableOpacity
+          style={[styles.fab, isMenuVisible && styles.fabClose]}
+          onPress={() => setIsMenuVisible(!isMenuVisible)}
+        >
+          <MaterialCommunityIcons
+            name={isMenuVisible ? 'close' : 'plus'}
+            color={isMenuVisible ? '#1c1b1f' : '#e8e0ff'}
+            size={32}
+          />
+        </TouchableOpacity>
+      </View>
     </SafeAreaView>
   );
 }

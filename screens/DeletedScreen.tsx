@@ -9,6 +9,8 @@ import {
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useNavigation } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
 import { NoteItem, ChecklistItem } from './HomeScreen'; // Import the shared type
 import { createNoteInCloud } from '../server/cloudSync';
 
@@ -21,6 +23,7 @@ type TrashItem = NoteItem & {
 };
 
 const DeletedScreen = ({ onRestore }: { onRestore?: () => void }) => {
+    const navigation = useNavigation<StackNavigationProp<any>>();
     const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
 
     const loadTrash = async () => {
@@ -55,7 +58,7 @@ const DeletedScreen = ({ onRestore }: { onRestore?: () => void }) => {
     try {
         // 1. Prepare the note for restoration (remove the deletedAt field)
         const { deletedAt, ...restoredNote } = item;
-        const noteToRestore: NoteItem = { ...restoredNote };
+        const noteToRestore: NoteItem = { ...restoredNote, createdAt: new Date().toISOString() };
 
         // 2. Add it back to the Cloud
         const success = await createNoteInCloud(noteToRestore);
@@ -69,10 +72,15 @@ const DeletedScreen = ({ onRestore }: { onRestore?: () => void }) => {
             await AsyncStorage.setItem(TRASH_KEY, JSON.stringify(updatedTrash));
             setTrashItems(updatedTrash);
             
-            // 5. Refresh the HomeScreen list
-            onRestore?.();
-
-            Alert.alert('Restored', `"${item.title || 'Untitled'}" moved back to Cloud.`);
+            Alert.alert('Restored', `"${item.title || 'Untitled'}" moved back to Notes.`, [
+                {
+                    text: 'OK',
+                    onPress: () => {
+                        onRestore?.();
+                        navigation.navigate('NotesHome');
+                    },
+                },
+            ]);
         } else {
             Alert.alert('Sync Error', 'Failed to restore note to the server.');
         }
@@ -120,7 +128,15 @@ const DeletedScreen = ({ onRestore }: { onRestore?: () => void }) => {
 
     return (
         <View style={styles.container}>
-            <Text style={styles.headerTitle}>Deleted</Text>
+            <View style={styles.header}>
+                <TouchableOpacity
+                    onPress={() => navigation.goBack()}
+                    style={styles.backButton}
+                >
+                    <MaterialCommunityIcons name="chevron-left" size={28} color="#fff" />
+                </TouchableOpacity>
+                <Text style={styles.headerTitle}>Recycle Bin</Text>
+            </View>
             <Text style={styles.subHeader}>
                 Notes in Recycle Bin are deleted after 7 days
             </Text>
@@ -176,10 +192,18 @@ const styles = StyleSheet.create({
         padding: 16,
         backgroundColor: '#1c1b1f', // match app theme
     },
+    header: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: 16,
+    },
+    backButton: {
+        marginRight: 12,
+        padding: 4,
+    },
     headerTitle: {
         fontSize: 28,
         fontWeight: 'bold',
-        marginBottom: 4,
         color: '#fff',
     },
     subHeader: {
