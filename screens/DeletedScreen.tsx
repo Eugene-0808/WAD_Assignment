@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
     View,
     Text,
@@ -9,37 +9,47 @@ import {
 } from 'react-native';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { NoteItem, ChecklistItem } from './HomeScreen'; // Import the shared type
+import { NoteItem, ChecklistItem } from './HomeScreen';
 import { createNoteInCloud } from '../server/cloudSync';
 
 const TRASH_KEY = '@deleted_items';
 const NOTES_KEY = '@all_notes';
 
-// Trash item extends NoteItem with a deletion timestamp
 type TrashItem = NoteItem & {
-  deletedAt: string;
+    deletedAt: string;
 };
 
 const DeletedScreen = ({ onRestore }: { onRestore?: () => void }) => {
     const navigation = useNavigation<StackNavigationProp<any>>();
     const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
 
-    const loadTrash = async () => {
-        const json = await AsyncStorage.getItem(TRASH_KEY);
-        const data = json != null ? JSON.parse(json) : [];
-        setTrashItems(data);
+    // Clean expired items (older than 7 days)
+    const cleanExpiredTrash = (items: TrashItem[]): TrashItem[] => {
+        const now = new Date();
+        const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        return items.filter(item => new Date(item.deletedAt) > sevenDaysAgo);
     };
 
-    useEffect(() => {
-        loadTrash();
-        // Optional: you can remove the interval and just refresh when needed (e.g., after restore/delete)
-        const interval = setInterval(loadTrash, 1000);
-        return () => clearInterval(interval);
-    }, []);
+    const loadTrash = async () => {
+        const json = await AsyncStorage.getItem(TRASH_KEY);
+        let data: TrashItem[] = json != null ? JSON.parse(json) : [];
+        const cleanedData = cleanExpiredTrash(data);
+        if (cleanedData.length !== data.length) {
+            await AsyncStorage.setItem(TRASH_KEY, JSON.stringify(cleanedData));
+        }
+        setTrashItems(cleanedData);
+    };
 
-    // Days remaining (7 days auto-delete)
+    // Load trash when screen is focused
+    useFocusEffect(
+        useCallback(() => {
+            loadTrash();
+        }, [])
+    );
+
+    // Days remaining (for display)
     const daysLeft = (deletedAt: string) => {
         const deleted = new Date(deletedAt);
         const now = new Date();
@@ -55,40 +65,33 @@ const DeletedScreen = ({ onRestore }: { onRestore?: () => void }) => {
     };
 
     const handleRestore = async (item: TrashItem) => {
-    try {
-        // 1. Prepare the note for restoration (remove the deletedAt field)
-        const { deletedAt, ...restoredNote } = item;
-        const noteToRestore: NoteItem = { ...restoredNote, createdAt: new Date().toISOString() };
+        try {
+            const { deletedAt, ...restoredNote } = item;
+            const noteToRestore: NoteItem = { ...restoredNote, createdAt: new Date().toISOString() };
 
-        // 2. Add it back to the Cloud
-        const success = await createNoteInCloud(noteToRestore);
-
-        if (success) {
-            // 3. Add the restored note to local storage so HomeScreen can load it
-            await restoreToLocalNotes(noteToRestore);
-
-            // 4. Remove it from local trash
-            const updatedTrash = trashItems.filter(t => t.id !== item.id);
-            await AsyncStorage.setItem(TRASH_KEY, JSON.stringify(updatedTrash));
-            setTrashItems(updatedTrash);
-            
-            Alert.alert('Restored', `"${item.title || 'Untitled'}" moved back to Notes.`, [
-                {
-                    text: 'OK',
-                    onPress: () => {
-                        onRestore?.();
-                        navigation.navigate('NotesHome');
+            const success = await createNoteInCloud(noteToRestore);
+            if (success) {
+                await restoreToLocalNotes(noteToRestore);
+                const updatedTrash = trashItems.filter(t => t.id !== item.id);
+                await AsyncStorage.setItem(TRASH_KEY, JSON.stringify(updatedTrash));
+                setTrashItems(updatedTrash);
+                Alert.alert('Restored', `"${item.title || 'Untitled'}" moved back to Notes.`, [
+                    {
+                        text: 'OK',
+                        onPress: () => {
+                            onRestore?.();
+                            navigation.navigate('NotesHome');
+                        },
                     },
-                },
-            ]);
-        } else {
-            Alert.alert('Sync Error', 'Failed to restore note to the server.');
+                ]);
+            } else {
+                Alert.alert('Sync Error', 'Failed to restore note to the server.');
+            }
+        } catch (error) {
+            console.error(error);
+            Alert.alert('Error', 'Could not restore note.');
         }
-    } catch (error) {
-        console.error(error);
-        Alert.alert('Error', 'Could not restore note.');
-    }
-};
+    };
 
     const handlePermanentDelete = async (item: TrashItem) => {
         Alert.alert('Delete permanently', `Remove "${item.title || 'Untitled'}" forever?`, [
@@ -104,6 +107,7 @@ const DeletedScreen = ({ onRestore }: { onRestore?: () => void }) => {
             },
         ]);
     };
+
 
     const renderItemContent = (item: TrashItem) => {
         switch (item.type) {
